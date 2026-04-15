@@ -11,6 +11,7 @@ using std::chrono::steady_clock;
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/epoll.h>
 #endif
 
 namespace tvision
@@ -132,6 +133,55 @@ static bool fdEmpty(int fd) noexcept
     return ioctl(fd, FIONREAD, &nbytes) == -1 || !nbytes;
 }
 
+#if 1   // using epool
+static void pollHandles(PollData &pd, int ms) noexcept
+{
+    if (pd.epollFd <= 0) {
+        pd.epollFd = epoll_create1(EPOLL_CLOEXEC);
+        if (pd.epollFd == -1)
+        {
+            return;
+        }
+    }
+
+    auto &fds = pd.handles;
+    auto &states = pd.states;
+    for (size_t i = 0; i < fds.size(); ++i)
+    {
+        static struct epoll_event ev;
+        ev.data.fd = fds[i];
+        ev.events = EPOLLIN;
+        auto ret = epoll_ctl(pd.epollFd, EPOLL_CTL_ADD, fds[i], &ev);
+        if (ret == -1) {
+            // ADD fails when descriptor is already on the set so we call MOD instead 
+            ret = epoll_ctl(pd.epollFd, EPOLL_CTL_MOD, fds[i], &ev);
+        }
+        if (ret < 0) printf("epoll_ctl: %d\n", ret);
+    }
+
+    struct epoll_event *events = new epoll_event[fds.size()];
+    auto nfds = epoll_wait(pd.epollFd, events, fds.size(), ms);
+
+    for (int j = 0; j < nfds; ++j) {
+        for (size_t i = 0; i < fds.size(); ++i) {
+            if (events[j].data.fd == fds[i])
+            {
+                if (fdEmpty(fds[i]))
+                {
+                    states[i] = psDisconnect;
+                }
+                else
+                {
+                    states[i] = psReady;
+                }
+                break;
+            }
+        } 
+    }
+    delete [] events;
+    events = nullptr;
+}
+#else
 static void pollHandles(PollData &pd, int ms) noexcept
 {
     auto &fds = pd.handles;
@@ -168,6 +218,7 @@ static void pollHandles(PollData &pd, int ms) noexcept
                 }
     }
 }
+#endif
 
 #else
 
@@ -205,6 +256,17 @@ EventWaiter::EventWaiter() noexcept
         addSource(*wakeUp);
     }
 }
+
+EventWaiter::~EventWaiter()
+{
+#ifdef _TV_UNIX
+    if (pd.epollFd > 0)
+    {
+        close(pd.epollFd);
+        pd.epollFd = 0;
+    }
+#endif
+} 
 
 void EventWaiter::addSource(EventSource &src) noexcept
 {

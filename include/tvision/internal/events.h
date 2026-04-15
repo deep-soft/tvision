@@ -115,6 +115,9 @@ enum PollState : uint8_t
 
 struct PollData
 {
+#ifdef _TV_UNIX
+    int epollFd {0};
+#endif
     std::vector<SysHandle> handles;
     std::vector<PollState> states;
 
@@ -152,6 +155,7 @@ class EventWaiter
 public:
 
     EventWaiter() noexcept;
+    virtual ~EventWaiter();
 
     void addSource(EventSource &) noexcept;
     void removeSource(EventSource &) noexcept;
